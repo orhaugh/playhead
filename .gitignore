@@ -1,0 +1,13 @@
+# Per-run state: generated keys, the tape, run outputs
+/state/
+/data/
+/out/
+
+# Python
+__pycache__/
+*.pyc
+/.venv/
+
+# Editor / OS noise
+.DS_Store
+.idea/

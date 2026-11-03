@@ -1,0 +1,33 @@
+# clink on the platform's cluster, from the chart at the pinned release.
+image:
+  repository: ghcr.io/orhaugh/clink-runtime
+  tag: "0.15.0"
+  pullPolicy: IfNotPresent
+
+coordinator:
+  extraArgs:
+    # Lifecycle spans and metrics to the cloud's OpenTelemetry Collector, and
+    # every job's lineage to Marquez as OpenLineage run events.
+    - --otlp-endpoint=http://otel-collector.cloud.svc.cluster.local:4318
+    - --lineage-listener=openlineage
+    - --lineage-endpoint=http://marquez.cloud.svc.cluster.local:5000
+    - --lineage-namespace=playhead
+
+worker:
+  replicas: 2
+  slots: 4
+  extraArgs:
+    - --otlp-endpoint=http://otel-collector.cloud.svc.cluster.local:4318
+
+# Two Coordinators, leader elected over a shared directory. On this one-node
+# cluster the directory is a hostPath every pod mounts; a multi-node cluster
+# needs a ReadWriteMany PVC. Checkpoints live under it too, so a Worker that
+# replaces a killed one reads the state its predecessor wrote.
+ha:
+  enabled: true
+  replicas: 2
+  storage:
+    type: hostPath
+    mountPath: /var/lib/clink/ha
+    hostPath:
+      path: /var/lib/clink-ha

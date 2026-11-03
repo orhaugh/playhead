@@ -1,0 +1,153 @@
+# The cloud the platform's cluster talks to: a Kafka-compatible broker with a
+# Schema Registry, an S3-compatible store with an Iceberg REST catalog over it,
+# GCS and Azure Blob emulators, an OpenLineage backend, and an OpenTelemetry
+# pipeline. Each runs on kind's Docker network; scripts/cloud-services.sh then
+# gives every one a Service in the cluster's `cloud` namespace, so a pod
+# reaches redpanda.cloud.svc.cluster.local as it would a managed service.
+#
+# Every port is published on the loopback only.
+
+name: playhead-cloud
+
+networks:
+  default:
+    name: kind
+    external: true
+
+services:
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      # Three listeners, each advertising a name its clients can reach.
+      # docker (9092): the other containers, rpk inside this one, and the
+      # Schema Registry's own client, which connects to 9092 and must be able
+      # to resolve what it is told. pods (9093): the in-cluster Service name.
+      # host (19092): the tools on the host.
+      - --kafka-addr=docker://0.0.0.0:9092,pods://0.0.0.0:9093,host://0.0.0.0:19092
+      - --advertise-kafka-addr=docker://redpanda:9092,pods://redpanda.cloud.svc.cluster.local:9093,host://127.0.0.1:19092
+      - --schema-registry-addr=0.0.0.0:8081
+    ports:
+      - "127.0.0.1:19092:19092"
+      - "127.0.0.1:18081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health -X brokers=redpanda:9092 | grep -q 'Healthy:.*true'"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  localstack:
+    image: localstack/localstack:3.4
+    environment:
+      SERVICES: s3
+      EAGER_SERVICE_LOADING: "1"
+    ports:
+      - "127.0.0.1:4566:4566"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4566/_localstack/health | grep -q '\"s3\": \"\\(available\\|running\\)\"'"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:1.10.0
+    environment:
+      CATALOG_WAREHOUSE: s3://lake/warehouse/
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://localstack:4566
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+    ports:
+      - "127.0.0.1:8181:8181"
+    depends_on:
+      localstack:
+        condition: service_healthy
+
+  fake-gcs:
+    image: fsouza/fake-gcs-server:1.52.2
+    command: ["-scheme", "http", "-port", "4443", "-backend", "memory",
+              "-external-url", "http://fake-gcs.cloud.svc.cluster.local:4443"]
+    ports:
+      - "127.0.0.1:4443:4443"
+
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite:3.34.0
+    command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000",
+              "--loose", "--skipApiVersionCheck"]
+    environment:
+      # One storage account whose key scripts/up.sh generates for each run
+      # (state/cloud.env, never committed); clink is handed it at submit time.
+      AZURITE_ACCOUNTS: "playhead:${PLAYHEAD_AZURE_KEY:?generate it with scripts/up.sh}"
+    ports:
+      - "127.0.0.1:10000:10000"
+
+  marquez-db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+      POSTGRES_DB: marquez
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U marquez"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  marquez:
+    image: marquezproject/marquez:0.51.1
+    platform: linux/amd64
+    environment:
+      MARQUEZ_PORT: "5000"
+      MARQUEZ_ADMIN_PORT: "5001"
+      POSTGRES_HOST: marquez-db
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: marquez
+      POSTGRES_USER: marquez
+      POSTGRES_PASSWORD: marquez
+    ports:
+      - "127.0.0.1:5000:5000"
+    depends_on:
+      marquez-db:
+        condition: service_healthy
+
+  marquez-web:
+    image: marquezproject/marquez-web:0.51.1
+    platform: linux/amd64
+    environment:
+      MARQUEZ_HOST: marquez
+      MARQUEZ_PORT: "5000"
+    ports:
+      - "127.0.0.1:13000:3000"
+    depends_on:
+      - marquez
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.66.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - jaeger
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - otel-collector

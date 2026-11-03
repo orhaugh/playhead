@@ -1,0 +1,18 @@
+// One request a CDN edge served: the player's segment fetches, as the CDN
+// vendor reports them.
+syntax = "proto3";
+
+package media.playhead;
+
+message EdgeRequest {
+  string request_id = 1;
+  string session_id = 2;
+  // The edge location (point of presence) that served it, such as "lhr".
+  string pop = 3;
+  int64 bytes = 4;
+  // Time to first byte.
+  int32 ttfb_ms = 5;
+  int32 status = 6;
+  // Epoch milliseconds.
+  int64 ts = 7;
+}

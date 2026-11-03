@@ -1,0 +1,9 @@
+# One node: the platform team's cluster, small enough for a laptop. The
+# managed services it talks to (Kafka, object stores, lineage, telemetry) run
+# beside it as containers on the same Docker network, standing in for the
+# cloud's.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: playhead
+nodes:
+  - role: control-plane

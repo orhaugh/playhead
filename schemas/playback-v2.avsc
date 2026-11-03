@@ -1,0 +1,112 @@
+{
+  "type": "record",
+  "name": "PlaybackEvent",
+  "namespace": "media.playhead",
+  "doc": "One event from a player: a session starts, shows its first frame, stalls, switches bitrate, fails or stops.",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string"
+    },
+    {
+      "name": "session_id",
+      "type": "string"
+    },
+    {
+      "name": "title_id",
+      "type": "string"
+    },
+    {
+      "name": "device",
+      "type": {
+        "type": "enum",
+        "name": "Device",
+        "symbols": [
+          "TV",
+          "MOBILE",
+          "WEB",
+          "CONSOLE"
+        ]
+      }
+    },
+    {
+      "name": "app_version",
+      "type": "string"
+    },
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "EventType",
+        "symbols": [
+          "START",
+          "FIRST_FRAME",
+          "REBUFFER",
+          "BITRATE_CHANGE",
+          "ERROR",
+          "STOP"
+        ]
+      }
+    },
+    {
+      "name": "ts",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      }
+    },
+    {
+      "name": "startup_ms",
+      "type": [
+        "null",
+        "long"
+      ],
+      "default": null,
+      "doc": "On FIRST_FRAME: milliseconds from START to the first frame."
+    },
+    {
+      "name": "stall_ms",
+      "type": [
+        "null",
+        "long"
+      ],
+      "default": null,
+      "doc": "On REBUFFER: how long playback stalled."
+    },
+    {
+      "name": "bitrate_kbps",
+      "type": [
+        "null",
+        "int"
+      ],
+      "default": null,
+      "doc": "On BITRATE_CHANGE: the bitrate switched to."
+    },
+    {
+      "name": "error_code",
+      "type": [
+        "null",
+        "string"
+      ],
+      "default": null,
+      "doc": "On ERROR: the player's error code."
+    },
+    {
+      "name": "network",
+      "type": [
+        "null",
+        {
+          "type": "enum",
+          "name": "Network",
+          "symbols": [
+            "WIFI",
+            "CELLULAR",
+            "ETHERNET"
+          ]
+        }
+      ],
+      "default": null,
+      "doc": "Added in app 5.0: the connection the player was on. Older apps send no such field."
+    }
+  ]
+}
