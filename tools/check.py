@@ -127,14 +127,7 @@ def read_gcs() -> list[dict]:
         if "/committed/" not in name or not name.endswith(".parquet"):
             continue
         with urllib.request.urlopen(f"{base}/{urllib.parse.quote(name, safe='')}?alt=media", timeout=30) as r:
-            table = pq.read_table(io.BytesIO(r.read()))
-        if "value" in table.column_names and str(table.schema.field("value").type) == "string":
-            # clink 0.15.0 writes SQL rows to object-store Parquet as a JSON
-            # text column, `value`, beside `event_time`. Read through until the
-            # typed sink replaces it.
-            rows += [json.loads(v) for v in table.column("value").to_pylist()]
-        else:
-            rows += table.to_pylist()
+            rows += pq.read_table(io.BytesIO(r.read())).to_pylist()
     return rows
 
 

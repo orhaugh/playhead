@@ -15,7 +15,7 @@ coordinator:
 
 worker:
   replicas: 2
-  slots: 4
+  slots: 10
   extraArgs:
     - --otlp-endpoint=http://otel-collector.cloud.svc.cluster.local:4318
 

@@ -6,6 +6,8 @@
 #   SPEED=30 ./run.sh        the half hour at thirty times real time (default 15)
 #   KILL=0 ./run.sh          without the Worker kill
 #   CLEANUP=1 ./run.sh       and remove the cluster and the cloud at the end
+#   CLINK_IMAGE=clink-runtime:dev-<sha> ./run.sh
+#                            against a local clink build instead of the pinned release
 #
 # Steps: create the kind cluster if it is not there; recreate the cloud from
 # empty and name its services inside the cluster; reinstall clink from the
