@@ -49,7 +49,7 @@ def union(branch: str, value):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--sessions", type=int, default=1500)
+    ap.add_argument("--sessions", type=int, default=6000)
     ap.add_argument("--out", type=Path, default=ROOT / "data")
     args = ap.parse_args()
     rnd = random.Random(args.seed)
