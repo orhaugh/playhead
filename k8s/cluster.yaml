@@ -1,0 +1,52 @@
+# clink on the platform's cluster, run by the clink operator: what k8s/values.yaml
+# asks of the chart, as a ClinkCluster. run.sh sets the image.
+#
+# Two Coordinators, leader elected over a shared directory; two Workers with ten
+# slots each; every pod requires the HTTP API token, and the Workers reach the
+# Coordinators over mutual TLS (scripts/secrets.sh makes the Secrets). On this
+# one-node cluster the HA directory and the checkpoints are hostPaths every pod
+# mounts; a multi-node cluster needs ReadWriteMany claims (type: pvc).
+apiVersion: clink.dev/v1alpha1
+kind: ClinkCluster
+metadata:
+  name: clink
+  namespace: clink
+spec:
+  image:
+    repository: ghcr.io/orhaugh/clink-runtime
+    tag: "0.15.0"
+  coordinator:
+    extraArgs:
+      # Lifecycle spans and metrics to the cloud's OpenTelemetry Collector, and
+      # every job's lineage to Marquez as OpenLineage run events.
+      - --otlp-endpoint=http://otel-collector.cloud.svc.cluster.local:4318
+      - --lineage-listener=openlineage
+      - --lineage-endpoint=http://marquez.cloud.svc.cluster.local:5000
+      - --lineage-namespace=playhead
+  worker:
+    replicas: 2
+    slots: 10
+    extraArgs:
+      - --otlp-endpoint=http://otel-collector.cloud.svc.cluster.local:4318
+    # The finance account's key, which the ledger job reads as
+    # env://AZURE_ACCOUNT_KEY when a Worker builds its sink.
+    envFrom:
+      - secretRef:
+          name: playhead-azure
+  auth:
+    existingSecret: clink-auth
+  tls:
+    enabled: true
+    coordinatorSecret: clink-tls-coordinator
+    workerSecret: clink-tls-worker
+  ha:
+    enabled: true
+    replicas: 2
+    type: hostPath
+    mountPath: /var/lib/clink/ha
+    hostPath: /var/lib/clink-ha
+  checkpointStorage:
+    enabled: true
+    type: hostPath
+    mountPath: /var/lib/clink/checkpoints
+    hostPath: /var/lib/clink-checkpoints

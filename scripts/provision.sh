@@ -8,7 +8,7 @@
 # when it rolls out, mid-run (tools/feed.py), as a team shipping it would.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE=(docker compose -f "${ROOT}/cloud/compose.yml" --env-file "${ROOT}/state/cloud.env")
+COMPOSE=(docker compose --progress quiet -f "${ROOT}/cloud/compose.yml" --env-file "${ROOT}/state/cloud.env")
 rpk() { "${COMPOSE[@]}" exec -T redpanda rpk -X brokers=redpanda:9092 -X registry.hosts=localhost:8081 "$@"; }
 
 for t in playback.events:4 cdn.edge:4 qoe.alerts:1; do

@@ -14,9 +14,15 @@ read the way its consumer would read it:
                      Schema Registry: exactly the failing title-minutes, once each
   gs://cdn-vendor    the CDN vendor's bucket, every object the exactly-once sink
                      published: one row per edge location and minute, none twice
+  azure://finance    finance's container, every object the exactly-once sink
+                     published: one row per session that started, none twice
 
---wait SECONDS retries until every check passes or the time is up, since the
-last windows close and commit a few checkpoints after the feed ends.
+Then the cluster itself, once: the API's token and the control plane's mutual
+TLS; the ClinkJobs, and the evidence of the upgrade (--upgraded) and of the
+failover (--failover); and the traces, metrics and lineage it exported.
+
+--wait SECONDS retries the outputs until they all pass or the time is up, since
+the last windows close and commit a few checkpoints after the feed ends.
 
 Runs under the project's virtualenv (requirements.txt): PyIceberg and pyarrow.
 """
@@ -242,6 +248,45 @@ def check_security() -> tuple[bool, list[str]]:
     return all_ok, lines
 
 
+def api_json(path: str):
+    # The Coordinator's API with the cluster's token, asked from a Worker's pod.
+    got = in_pod("clink-worker-0", f'curl -s -H "Authorization: Bearer $CLINK_AUTH_TOKEN" {API}{path}')
+    return json.loads(got.stdout)
+
+
+def check_platform(deploy: str, upgraded: str, failover: bool, jobs: list[str]) -> tuple[bool, list[str]]:
+    lines, all_ok = [], True
+
+    def line(what: str, ok: bool) -> None:
+        nonlocal all_ok
+        lines.append(f"  {what}  {'OK' if ok else 'FAIL'}")
+        all_ok &= ok
+
+    if deploy == "operator":
+        cjs = {c["metadata"]["name"]: c for c in json.loads(subprocess.run(
+            KUBECTL + ["get", "clinkjob", "-o", "json"], capture_output=True, text=True, check=True).stdout)["items"]}
+        for name in jobs:
+            st = cjs.get(name, {}).get("status", {})
+            line(f"operator: ClinkJob {name} is {st.get('phase', '-')}, job {st.get('jobID', '-')}",
+                 st.get("phase") == "Running")
+        if upgraded:
+            # What scripts/upgrade.sh saw when the new job started: a later
+            # failover restores the job again, from its own checkpoints.
+            try:
+                up = json.loads((ROOT / "state" / f"upgrade-{upgraded}.json").read_text())
+            except (OSError, ValueError):
+                up = {}
+            line(f"operator: the {upgraded} upgrade replaced job {up.get('from', '-')} with job "
+                 f"{up.get('to', '-')}, restored from its savepoint {up.get('savepoint', '-')}",
+                 bool(up) and up["from"] != up["to"] and up["restored_from"] == up["savepoint"])
+    if failover:
+        record = json.loads(in_pod("clink-coordinator-0", "cat /var/lib/clink/ha/active-leader.json").stdout)
+        running = [j["name"] for j in api_json("/api/v1/jobs")["jobs"] if j["status"] == "RUNNING"]
+        line(f"failover: leadership at epoch {record['epoch']} under {record['host'].split('.')[0]}, "
+             f"running {sorted(running)}", record["epoch"] >= 2 and set(jobs) <= set(running))
+    return all_ok, lines
+
+
 def get_json(url: str):
     with urllib.request.urlopen(url, timeout=10) as r:
         return json.load(r)
@@ -286,6 +331,9 @@ def check_observability(jobs: list[str]) -> tuple[bool, list[str]]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--wait", type=int, default=0)
+    ap.add_argument("--deploy", choices=["operator", "chart"], default="operator")
+    ap.add_argument("--upgraded", default="", help="the job the run upgraded, if any")
+    ap.add_argument("--failover", action="store_true", help="the run killed the leading Coordinator")
     args = ap.parse_args()
     want_title, want_alerts, want_pops, want_ledger = expected()
     print(f"check: the tape says {len(want_title)} title-minutes, {len(want_alerts)} alerts "
@@ -297,10 +345,12 @@ def main() -> int:
         if ok or time.monotonic() >= deadline:
             break
         time.sleep(10)
+    jobs = ["qoe", "alerts", "edges", "ledger"]
     secure, secure_lines = check_security()
-    observed, observed_lines = check_observability(["qoe", "alerts", "edges", "ledger"])
-    print("\n".join(lines + secure_lines + observed_lines))
-    ok &= secure and observed
+    platform, platform_lines = check_platform(args.deploy, args.upgraded, args.failover, jobs)
+    observed, observed_lines = check_observability(jobs)
+    print("\n".join(lines + secure_lines + platform_lines + observed_lines))
+    ok &= secure and platform and observed
     print("check: PASS" if ok else "check: FAIL")
     return 0 if ok else 1
 
