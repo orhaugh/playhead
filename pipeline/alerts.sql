@@ -30,6 +30,12 @@ CREATE TABLE playback (
     -- A message no schema decodes (a wrong magic byte, an unknown id) is
     -- dropped and counted rather than stopping the job.
     decode_error        = 'skip',
+    -- The apps' producers put unkeyed records on whichever partition they
+    -- are on, and a partition can go quiet for the rest of the half hour.
+    -- clink takes the lowest partition watermark, so a quiet partition would
+    -- hold every window open; after ten seconds of silence it is set aside
+    -- until it speaks again.
+    idle_timeout_ms     = '10000',
     event_time_column   = 'ts',
     watermark_lag_ms    = '15000'
 );
