@@ -6,8 +6,6 @@
 #   SPEED=30 ./run.sh        the half hour at thirty times real time (default 15)
 #   KILL=0 ./run.sh          without the Worker kill
 #   CLEANUP=1 ./run.sh       and remove the cluster and the cloud at the end
-#   CLINK_IMAGE=clink-runtime:dev-<sha> ./run.sh
-#                            against a local clink build instead of the pinned release
 #
 # Steps: create the kind cluster if it is not there; recreate the cloud from
 # empty and name its services inside the cluster; reinstall clink from the
@@ -16,15 +14,22 @@
 # killing a Worker with SIGKILL at minute 14, inside the failing-title
 # incident; wait for the outputs to settle; then tools/check.py checks the
 # Iceberg table, the alerts topic and the CDN vendor's bucket.
+#
+# The sample needs clink after v0.15.0: typed SQL tables on object-store
+# Parquet, and the chart's auth, TLS and Secrets. Until the release that
+# carries them, run it against a build of clink and the chart at that commit:
+#
+#   CLINK_IMAGE=clink-runtime:dev-<sha> CLINK_REF=<sha> ./run.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 CTX=kind-playhead
 SPEED="${SPEED:-15}"
 KILL="${KILL:-1}"
-IMAGE="${CLINK_IMAGE:-ghcr.io/orhaugh/clink-runtime:0.15.0}"
+IMAGE="${CLINK_IMAGE:?set CLINK_IMAGE and CLINK_REF; see the header}"
+REF="${CLINK_REF:?set CLINK_IMAGE and CLINK_REF; see the header}"
 COMPOSE=(docker compose -f cloud/compose.yml --env-file state/cloud.env)
-JOBS=(qoe alerts edges)
+JOBS=(qoe alerts edges ledger)
 k() { kubectl --context "$CTX" -n clink "$@"; }
 say() { printf '\n==> %s\n' "$*"; }
 
@@ -50,14 +55,16 @@ say "clink, from the chart, with an empty HA directory"
 helm --kube-context "$CTX" uninstall clink -n clink --wait >/dev/null 2>&1 || true
 docker exec playhead-control-plane rm -rf /var/lib/clink-ha
 rm -rf state/chart && mkdir -p state/chart
-git -C "${CLINK_SRC:-../clink}" archive v0.15.0 deploy/helm/clink | tar -x -C state/chart
+git -C "${CLINK_SRC:-../clink}" archive "$REF" deploy/helm/clink | tar -x -C state/chart
+scripts/secrets.sh
 docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull -q "$IMAGE" >/dev/null
 kind load docker-image "$IMAGE" --name playhead >/dev/null
 helm --kube-context "$CTX" upgrade --install clink state/chart/deploy/helm/clink -n clink --create-namespace \
   -f k8s/values.yaml --set image.repository="${IMAGE%:*}" --set image.tag="${IMAGE##*:}" \
   --wait --timeout 5m >/dev/null
 for _ in $(seq 1 60); do
-  n="$(k exec deploy/clink-coordinator -- sh -c 'curl -s http://$(cat /var/lib/clink/ha/active-leader.json | sed -E "s/.*\"host\":\"([^\"]+)\".*/\1/"):8081/api/v1/workers' 2>/dev/null \
+  # Any Coordinator answers with the leader's view: a standby forwards the API.
+  n="$(k exec clink-coordinator-0 -- sh -c 'curl -s -H "Authorization: Bearer $CLINK_AUTH_TOKEN" http://127.0.0.1:8081/api/v1/workers' 2>/dev/null \
        | python3 -I -c 'import json,sys; print(sum(1 for w in json.load(sys.stdin)["workers"] if not w["lost"]))' 2>/dev/null || echo 0)"
   [ "$n" = 2 ] && break
   sleep 2

@@ -18,6 +18,20 @@ worker:
   slots: 10
   extraArgs:
     - --otlp-endpoint=http://otel-collector.cloud.svc.cluster.local:4318
+  # The finance account's key, which the ledger job reads as
+  # env://AZURE_ACCOUNT_KEY when a Worker builds its sink.
+  extraEnvFrom:
+    - secretRef:
+        name: playhead-azure
+
+# A secured cluster: every pod requires the HTTP API token, and the Workers
+# reach the Coordinators over mutual TLS. scripts/secrets.sh makes the Secrets.
+auth:
+  existingSecret: clink-auth
+tls:
+  enabled: true
+  coordinatorSecret: clink-tls-coordinator
+  workerSecret: clink-tls-worker
 
 # Two Coordinators, leader elected over a shared directory. On this one-node
 # cluster the directory is a hostPath every pod mounts; a multi-node cluster

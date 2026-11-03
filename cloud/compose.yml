@@ -78,8 +78,12 @@ services:
 
   azurite:
     image: mcr.microsoft.com/azure-storage/azurite:3.34.0
+    # The cluster names Azurite azurite.cloud.svc.cluster.local, and Azurite
+    # would take that host's first label for the storage account; the account
+    # is in the path instead, as Arrow's path-style URLs put it there.
     command: ["azurite-blob", "--blobHost", "0.0.0.0", "--blobPort", "10000",
-              "--loose", "--skipApiVersionCheck"]
+              "--loose", "--skipApiVersionCheck", "--disableProductStyleUrl",
+              "--disableTelemetry"]
     environment:
       # One storage account whose key scripts/up.sh generates for each run
       # (state/cloud.env, never committed); clink is handed it at submit time.
