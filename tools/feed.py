@@ -47,11 +47,13 @@ def registry(method: str, path: str, body: dict | None = None) -> dict:
         return json.load(r)
 
 
-def producer(topic: str, schema_id: int | None) -> subprocess.Popen:
+def producer(topic: str, schema_id: int | None, partition: int = -1) -> subprocess.Popen:
     cmd = COMPOSE + ["exec", "-T", "redpanda", "rpk", "-X", "brokers=redpanda:9092",
                      "-X", "registry.hosts=localhost:8081", "topic", "produce", topic]
     if schema_id is not None:
         cmd += ["--schema-id", str(schema_id)]
+    if partition >= 0:
+        cmd += ["--partition", str(partition)]
     return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True)
 
 

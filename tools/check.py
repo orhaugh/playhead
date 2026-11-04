@@ -19,7 +19,15 @@ read the way its consumer would read it:
 
 Then the cluster itself, once: the API's token and the control plane's mutual
 TLS; the ClinkJobs, and the evidence of the upgrade (--upgraded) and of the
-failover (--failover); and the traces, metrics and lineage it exported.
+failover (--failover); and the traces, metrics and lineage it exported. A job
+named by --parks may already have parked for being idle, as it declares.
+
+--scale-to-zero checks the scale-to-zero scene instead (scripts/park.sh): the
+edges job parked once the half hour was over, held no slots and stayed parked
+with the half hour's records on its topic, the CDN's later batch woke it
+restored from the savepoint it parked at, and it parked again; and every
+edge-location minute from 33 to 39, the window open at the park among them,
+holds what the tape and the batch say, once.
 
 --wait SECONDS retries the outputs until they all pass or the time is up, since
 the last windows close and commit a few checkpoints after the feed ends.
@@ -29,6 +37,7 @@ Runs under the project's virtualenv (requirements.txt): PyIceberg and pyarrow.
 from __future__ import annotations
 
 import argparse
+import datetime
 import io
 import json
 import subprocess
@@ -254,7 +263,8 @@ def api_json(path: str):
     return json.loads(got.stdout)
 
 
-def check_platform(deploy: str, upgraded: str, failover: bool, jobs: list[str]) -> tuple[bool, list[str]]:
+def check_platform(deploy: str, upgraded: str, failover: bool, jobs: list[str],
+                   parks: list[str]) -> tuple[bool, list[str]]:
     lines, all_ok = [], True
 
     def line(what: str, ok: bool) -> None:
@@ -262,11 +272,16 @@ def check_platform(deploy: str, upgraded: str, failover: bool, jobs: list[str]) 
         lines.append(f"  {what}  {'OK' if ok else 'FAIL'}")
         all_ok &= ok
 
+    idle = set()
     if deploy == "operator":
         cjs = {c["metadata"]["name"]: c for c in json.loads(subprocess.run(
             KUBECTL + ["get", "clinkjob", "-o", "json"], capture_output=True, text=True, check=True).stdout)["items"]}
         for name in jobs:
             st = cjs.get(name, {}).get("status", {})
+            if name in parks and st.get("phase") == "Suspended" and st.get("suspendReason") == "Idle":
+                idle.add(name)
+                line(f"operator: ClinkJob {name} is parked for being idle, as it declares", True)
+                continue
             line(f"operator: ClinkJob {name} is {st.get('phase', '-')}, job {st.get('jobID', '-')}",
                  st.get("phase") == "Running")
         if upgraded:
@@ -283,7 +298,99 @@ def check_platform(deploy: str, upgraded: str, failover: bool, jobs: list[str]) 
         record = json.loads(in_pod("clink-coordinator-0", "cat /var/lib/clink/ha/active-leader.json").stdout)
         running = [j["name"] for j in api_json("/api/v1/jobs")["jobs"] if j["status"] == "RUNNING"]
         line(f"failover: leadership at epoch {record['epoch']} under {record['host'].split('.')[0]}, "
-             f"running {sorted(running)}", record["epoch"] >= 2 and set(jobs) <= set(running))
+             f"running {sorted(running)}", record["epoch"] >= 2 and set(jobs) - idle <= set(running))
+    return all_ok, lines
+
+
+SCENE_FROM, SCENE_TO = gen.T0 + 33 * MINUTE, gen.T0 + 40 * MINUTE
+PARKED_MINUTE = gen.T0 + 34 * MINUTE       # open when the job parked
+
+
+def expected_scene() -> tuple[dict, dict]:
+    """The edge-location minutes 33 to 39 from the tape and the later batch,
+    and how many requests of minute 34 came from each side of the park."""
+    pops = defaultdict(lambda: dict.fromkeys(POP_COLS, 0))
+    sides = defaultdict(lambda: [0, 0])
+    for side, name in enumerate(("edge.jsonl", "edge-later.jsonl")):
+        with open(ROOT / "data" / name) as f:
+            for line in f:
+                e = json.loads(line)
+                ws = window(e["ts"])
+                if not SCENE_FROM <= ws < SCENE_TO:
+                    continue
+                r = pops[(e["pop"], ws)]
+                r["requests"] += 1
+                r["bytes"] += e["bytes"]
+                r["server_errors"] += e["status"] >= 500
+                r["ttfb_ms"] += e["ttfb_ms"]
+                if ws == PARKED_MINUTE:
+                    sides[e["pop"]][side] += 1
+    return dict(pops), dict(sides)
+
+
+def check_scale_to_zero(upgraded: str, wait: int) -> tuple[bool, list[str]]:
+    lines, all_ok = [], True
+
+    def line(what: str, ok: bool) -> None:
+        nonlocal all_ok
+        lines.append(f"  {what}  {'OK' if ok else 'FAIL'}")
+        all_ok &= ok
+
+    try:
+        ev = json.loads((ROOT / "state" / "park-edges.json").read_text())
+        ended = int((ROOT / "state" / "feed-ended").read_text())
+    except (OSError, ValueError) as e:
+        return False, [f"  scale to zero: no record of the scene ({e})  FAIL"]
+    job_of = lambda sp: sp.split("@")[0].rstrip("/").rsplit("/", 1)[-1]
+    parked_at = int(datetime.datetime.fromisoformat(ev["parked_at"].replace("Z", "+00:00")).timestamp())
+    up = {}
+    if upgraded:
+        try:
+            up = json.loads((ROOT / "state" / f"upgrade-{upgraded}.json").read_text())
+        except (OSError, ValueError):
+            up = {}
+    started = up.get("to") if upgraded else job_of(ev["parked_savepoint"])
+    line(f"scale to zero: edges parked {parked_at - ended} s after the tape ended, the job "
+         f"{'the upgrade started, ' if upgraded else ''}job {job_of(ev['parked_savepoint'])}, "
+         f"at its savepoint {ev['parked_savepoint']}",
+         parked_at >= ended and job_of(ev["parked_savepoint"]) == started)
+    line(f"scale to zero: parked, it held no slots: {ev['slots_parked']} of {ev['slot_capacity']} in use, "
+         f"by {ev['running_while_parked']}; {ev['slots_running']} once it ran again",
+         "edges" not in ev["running_while_parked"].split(",") and ev["slots_running"] > ev["slots_parked"])
+    on_topic = sum(1 for _ in open(ROOT / "data" / "edge.jsonl"))
+    line(f"scale to zero: the half hour's {on_topic} edge requests on cdn.edge kept it parked: {ev['held']}",
+         "lag 0 < threshold" in ev["held"] and len(ev["baseline"]) > 0)
+    later = sum(1 for _ in open(ROOT / "data" / "edge-later.jsonl"))
+    line(f"scale to zero: the batch of {later} woke it {ev['woke'] - ev['delivered']} s after it was delivered, "
+         f"as job {ev['woke_as']}, restored from {ev['restored_from']}",
+         ev["restored_from"] == ev["parked_savepoint"] and ev["woke_as"] != job_of(ev["parked_savepoint"]))
+    line(f"scale to zero: and it parked again {ev['parked_again'] - ev['delivered']} s after the batch, "
+         f"job {job_of(ev['again_savepoint'])} at savepoint {ev['again_savepoint']}",
+         job_of(ev["again_savepoint"]) == ev["woke_as"])
+
+    want, sides = expected_scene()
+    in_scene = lambda r: SCENE_FROM <= r["window_start"] < SCENE_TO
+    name = "gs://cdn-vendor/pop-minute, minutes 33 to 39 (GCS, exactly once)"
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            got = read_gcs()
+            ok, out = compare(name, want, got, lambda r: (r["pop"], r["window_start"]), POP_COLS, counted=in_scene)
+        except Exception as e:  # not readable yet: retried
+            got, ok, out = [], False, f"  {name}: not readable yet ({type(e).__name__})  FAIL"
+        if ok or time.monotonic() >= deadline:
+            break
+        time.sleep(10)
+    lines.append(out)
+    all_ok &= ok
+    rows = {(r["pop"], r["window_start"]): r for r in got}
+    straddle = {p: rows.get((p, PARKED_MINUTE), {}).get("requests") for p in sorted(sides)}
+    line("scale to zero: minute 34, open when the job parked, holds requests from both sides of the park: "
+         + ", ".join(f"{p} {b}+{a}={straddle[p]}" for p, (b, a) in sorted(sides.items())),
+         all(straddle[p] == b + a and b > 0 and a > 0 for p, (b, a) in sides.items()))
+    seen = Counter((r["pop"], r["window_start"]) for r in got)
+    line(f"scale to zero: every one of the bucket's {len(seen)} edge-location minutes once",
+         bool(seen) and max(seen.values()) == 1)
     return all_ok, lines
 
 
@@ -334,7 +441,14 @@ def main() -> int:
     ap.add_argument("--deploy", choices=["operator", "chart"], default="operator")
     ap.add_argument("--upgraded", default="", help="the job the run upgraded, if any")
     ap.add_argument("--failover", action="store_true", help="the run killed the leading Coordinator")
+    ap.add_argument("--parks", action="append", default=[], help="a job that may have parked for being idle")
+    ap.add_argument("--scale-to-zero", action="store_true", help="check the scale-to-zero scene instead")
     args = ap.parse_args()
+    if args.scale_to_zero:
+        ok, lines = check_scale_to_zero(args.upgraded, args.wait)
+        print("\n".join(lines))
+        print("check: PASS" if ok else "check: FAIL")
+        return 0 if ok else 1
     want_title, want_alerts, want_pops, want_ledger = expected()
     print(f"check: the tape says {len(want_title)} title-minutes, {len(want_alerts)} alerts "
           f"({sorted({t for t, _ in want_alerts})}), {len(want_pops)} edge-location minutes up to minute 33, "
@@ -347,7 +461,7 @@ def main() -> int:
         time.sleep(10)
     jobs = ["qoe", "alerts", "edges", "ledger"]
     secure, secure_lines = check_security()
-    platform, platform_lines = check_platform(args.deploy, args.upgraded, args.failover, jobs)
+    platform, platform_lines = check_platform(args.deploy, args.upgraded, args.failover, jobs, args.parks)
     observed, observed_lines = check_observability(jobs)
     print("\n".join(lines + secure_lines + platform_lines + observed_lines))
     ok &= secure and platform and observed

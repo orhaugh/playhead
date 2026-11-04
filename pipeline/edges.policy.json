@@ -1,0 +1,12 @@
+{
+  "suspendPolicy": {"idleAfterSeconds": 60},
+  "wakePolicy": {
+    "kafkaLag": {
+      "brokers": "redpanda.cloud.svc.cluster.local:9093",
+      "topics": ["cdn.edge"],
+      "groupId": "playhead-edges",
+      "lagThreshold": 100,
+      "pollIntervalSeconds": 5
+    }
+  }
+}

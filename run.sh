@@ -9,6 +9,7 @@
 #   KILL=0 ./run.sh          without the Worker kill
 #   FAILOVER=0 ./run.sh      without the Coordinator failover
 #   UPGRADE=0 ./run.sh       without the edges job's upgrade (operator only)
+#   PARK=0 ./run.sh          without the scale-to-zero scene (operator only)
 #   CLEANUP=1 ./run.sh       and remove the cluster and the cloud at the end
 #
 # Steps: create the kind cluster if it is not there; recreate the cloud from
@@ -27,6 +28,12 @@
 # minute 20 the leading Coordinator's pod is killed, and the standby takes
 # over.
 #
+# Then the scale-to-zero scene (scripts/park.sh): the edges job, declared to
+# park after a minute without a record, parks once the half hour is over; the
+# CDN's later batch of edge logs wakes it, restored from the savepoint it parked
+# at; it parks again once the batch is done; and tools/check.py --scale-to-zero
+# holds the scene and the windows on both sides of the park to the tape.
+#
 # The sample needs clink after v0.15.0: typed SQL tables on object-store
 # Parquet, the chart's and the operator's auth, TLS and Secrets, and SQL
 # ClinkJobs. Until the release that carries them, run it against a build of
@@ -42,6 +49,8 @@ DEPLOY="${DEPLOY:-operator}"
 KILL="${KILL:-1}"
 FAILOVER="${FAILOVER:-1}"
 UPGRADE="${UPGRADE:-1}"
+PARK="${PARK:-1}"
+export PARK          # scripts/job.sh leaves the edges job's policy out at 0
 IMAGE="${CLINK_IMAGE:?set CLINK_IMAGE and CLINK_REF; see the header}"
 REF="${CLINK_REF:?set CLINK_IMAGE and CLINK_REF; see the header}"
 SRC="${CLINK_SRC:-../clink}"
@@ -129,6 +138,7 @@ say "The tape"
 python3 -I tools/gen.py
 
 say "Starting the jobs"
+rm -f state/feed-ended state/park-edges.json
 if [ "$DEPLOY" = operator ]; then
   for j in "${JOBS[@]}"; do scripts/job.sh "$j"; done
   for j in "${JOBS[@]}"; do
@@ -169,11 +179,13 @@ python3 -I tools/footprint.py --out state/footprint.json > state/footprint.txt &
 footprint=$!
 trap 'kill -TERM "$footprint" 2>/dev/null || true' EXIT
 python3 -I tools/feed.py --speed "$SPEED" ${hooks[@]+"${hooks[@]}"} | grep -vE '^feed: minute [0-9]+$'
+date -u +%s > state/feed-ended
 
 say "Checking every output against the tape"
 checks=(--deploy "$DEPLOY")
 [ "$DEPLOY" = operator ] && [ "$UPGRADE" = 1 ] && checks+=(--upgraded edges)
 [ "$FAILOVER" = 1 ] && checks+=(--failover)
+[ "$DEPLOY" = operator ] && [ "$PARK" = 1 ] && checks+=(--parks edges)
 status=0
 .venv/bin/python -I tools/check.py --wait 180 "${checks[@]}" || status=$?
 
@@ -181,6 +193,17 @@ say "What it cost"
 kill -TERM "$footprint" && wait "$footprint" || true
 trap - EXIT
 cat state/footprint.txt
+
+if [ "$DEPLOY" = operator ] && [ "$PARK" = 1 ]; then
+  say "Scale to zero: the edges job parks, and the CDN's next batch wakes it"
+  scene=(--scale-to-zero --wait 120)
+  [ "$UPGRADE" = 1 ] && scene+=(--upgraded edges)
+  if scripts/park.sh; then
+    .venv/bin/python -I tools/check.py "${scene[@]}" || status=1
+  else
+    status=1
+  fi
+fi
 
 if [ "${CLEANUP:-0}" = 1 ]; then
   "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true

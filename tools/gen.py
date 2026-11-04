@@ -10,11 +10,19 @@ new encode fails to start on most devices, and from minute 20 to minute 23 one
 edge location answers slowly and sometimes with 503s. App 5.0 rolls out at
 minute 15; its events carry the network the player was on, in the v2 schema.
 
+Then the CDN's next delivery of edge logs, for the scale-to-zero scene: after
+the half hour its logs stop and the edges job parks; the vendor then delivers
+six more minutes in one batch, which wakes it. The batch starts ten seconds
+before the tape's last minute ends, so the window still open when the job
+parked takes requests from both sides of the park. It draws from a random
+stream of its own, so the tape is the same with or without it.
+
 Output, under data/ (one JSON object per line, in event-time order):
   playback-v1.jsonl   events from apps before 5.0, Avro-JSON for the v1 schema
   playback-v2.jsonl   events from app 5.0, Avro-JSON for the v2 schema
   edge.jsonl          edge requests, JSON for the Protobuf message
   sessions.jsonl      each session's title and start, for the checks
+  edge-later.jsonl    the CDN's later batch of edge requests
 
 Avro's JSON encoding wraps a non-null union value in its branch name
 ({"long": 250}); rpk, which frames the records for the registry, requires it.
@@ -40,10 +48,32 @@ NETWORKS = ["WIFI", "CELLULAR", "ETHERNET"]
 BAD_TITLE, BAD_FROM, BAD_TO = "t07", 12, 16      # the broken encode, minutes [12, 16)
 SLOW_POP, SLOW_FROM, SLOW_TO = "fra", 20, 23     # the slow edge, minutes [20, 23)
 ROLLOUT_MIN = 15                                  # app 5.0 from here on
+LATER_FROM = T0 + (NIGHT_MIN + TAIL_MIN) * MINUTE - 10_000   # the later batch, from 34:50
+LATER_TO = LATER_FROM + 6 * MINUTE + 10_000                   # to 41:00
+LATER_SESSIONS = 300
+LATER_PLAYING = 100                               # already playing as the batch starts
 
 
 def union(branch: str, value):
     return None if value is None else {branch: value}
+
+
+def later_batch(rnd: random.Random) -> list[dict]:
+    edges: list[dict] = []
+    for n in range(LATER_SESSIONS):
+        start = LATER_FROM if n < LATER_PLAYING else LATER_FROM + rnd.randrange(5 * MINUTE)
+        stop = min(start + rnd.randrange(60_000, 5 * MINUTE), LATER_TO - 1)
+        pop, bitrate, t = rnd.choice(POPS), rnd.choice([1800, 3200, 5000, 7800]), start
+        while True:
+            t += rnd.randrange(4000, 8000)
+            if t >= stop:
+                break
+            status = 500 if rnd.random() < 0.003 else 200
+            edges.append({"request_id": f"q{len(edges) + 1:07d}", "session_id": f"l{n:05d}", "pop": pop,
+                          "bytes": 0 if status != 200 else bitrate * 6 * 125 + rnd.randrange(0, 4096),
+                          "ttfb_ms": rnd.randrange(15, 90), "status": status, "ts": t})
+    edges.sort(key=lambda e: (e["ts"], e["request_id"]))
+    return edges
 
 
 def main() -> int:
@@ -134,9 +164,14 @@ def main() -> int:
     with open(args.out / "sessions.jsonl", "w") as f:
         for s in sessions:
             f.write(json.dumps(s, separators=(",", ":")) + "\n")
+    later = later_batch(random.Random(args.seed + 1))
+    with open(args.out / "edge-later.jsonl", "w") as f:
+        for e in later:
+            f.write(json.dumps(e, separators=(",", ":")) + "\n")
     nv2 = sum(1 for e in events if e[1] == 2)
     print(f"gen: {len(sessions)} sessions, {len(events)} playback events "
-          f"({len(events) - nv2} v1, {nv2} v2), {len(edges)} edge requests")
+          f"({len(events) - nv2} v1, {nv2} v2), {len(edges)} edge requests, "
+          f"and a later batch of {len(later)} edge requests")
     return 0
 
 

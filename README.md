@@ -7,7 +7,9 @@ and keep a quality-of-experience table in Iceberg on S3, publish alerts to Kafka
 send the CDN vendor per-location minutes in its GCS bucket, and write finance's
 billing ledger to Azure. A half hour of viewing, generated deterministically, is
 played through them at fifteen times real time, with three faults on the way, and
-every output is then checked against what the tape says it must hold.
+every output is then checked against what the tape says it must hold. Then the
+CDN's job scales to zero: with the half hour over it parks itself, holding no
+slots, until the vendor's next batch of logs wakes it.
 
 ## What runs
 
@@ -65,6 +67,10 @@ time, and on the way:
    leadership and recovers the jobs, and the killed pod comes back as the new
    standby.
 
+The generator also writes the CDN's next six minutes of edge logs, from a random
+stream of its own so the tape is the same either way, for the scale-to-zero
+scene once the half hour is over and checked.
+
 ## Run it
 
 You need Docker with about 8 GB for it, kind, kubectl, Python 3 and OpenSSL, Helm
@@ -73,7 +79,7 @@ for `DEPLOY=chart`, and a clink checkout beside this one (`../clink`, or
 
 playhead needs clink after 0.15.0: typed SQL tables on object-store Parquet, the
 chart's and the operator's auth, TLS and Secrets, SQL `ClinkJob`s, and the fixes
-its upgrade and failover turned up. Until a release carries them, run it against
+its upgrade, failover and scale to zero turned up. Until a release carries them, run it against
 a runtime image built from clink at that commit:
 
 ```sh
@@ -85,6 +91,7 @@ CLINK_IMAGE=clink-runtime:<tag> CLINK_REF=<commit> ./run.sh
 | `DEPLOY` | `operator` | `chart` runs clink from the Helm chart, its jobs submitted by the CLI |
 | `SPEED` | `15` | the tape's speed over real time |
 | `UPGRADE` | `1` | `0` skips the edges upgrade (operator only) |
+| `PARK` | `1` | `0` skips the scale-to-zero scene (operator only) |
 | `KILL` | `1` | `0` skips the Worker kill |
 | `FAILOVER` | `1` | `0` skips the Coordinator failover |
 | `CLEANUP` | `0` | `1` removes the cluster and the cloud at the end |
@@ -143,6 +150,61 @@ check: PASS
 
 `DEPLOY=chart` passes the same checks, less the operator's.
 
+## Scale to zero
+
+A job that only has work now and then should not hold Worker slots all night.
+The edges job declares when it parks and what wakes it, in
+[`pipeline/edges.policy.json`](pipeline/edges.policy.json), which
+[`scripts/job.sh`](scripts/job.sh) puts into its `ClinkJob`:
+
+```json
+"suspendPolicy": {"idleAfterSeconds": 60},
+"wakePolicy": {"kafkaLag": {"brokers": "redpanda.cloud.svc.cluster.local:9093", "topics": ["cdn.edge"],
+                            "groupId": "playhead-edges", "lagThreshold": 100, "pollIntervalSeconds": 5}}
+```
+
+Through the half hour, with its upgrade, the Worker kill and the failover, the job
+never goes a minute without a record. Once the tape is over and checked,
+[`scripts/park.sh`](scripts/park.sh) runs the scene:
+
+1. A minute after its last record, the operator parks the job: it records where
+   `cdn.edge` ends, ends the job at a savepoint that cancels it, and frees its
+   slots. The window for minute 34 is still open, its state waiting in the
+   savepoint.
+2. The half hour's edge requests are still on `cdn.edge`, and clink's Kafka source
+   commits no offsets to its group, so the operator counts the backlog from where
+   the topic ended when the job parked: none, and the job stays parked.
+3. The CDN delivers its next six minutes of edge logs in one batch
+   ([`tools/batch.py`](tools/batch.py)), starting ten seconds before minute 34
+   ends, each edge location's logs on a partition of its own. The backlog wakes
+   the job, restored from the savepoint it parked at.
+4. The job writes minutes 34 to 39, and parks again a minute after the batch.
+
+`tools/check.py --scale-to-zero` holds the scene to what the operator and the
+Coordinator recorded, and the windows to the tape and the batch: minute 34 must
+hold the requests from before the park and after it in one row per edge
+location, and every edge-location minute in the bucket must be there once. The
+scene in a run with clink at `e6210048`:
+
+```text
+  scale to zero: edges parked 75 s after the tape ended, the job the upgrade started, job 5, at its savepoint /var/lib/clink/checkpoints/edges/_jobs/5@111  OK
+  scale to zero: parked, it held no slots: 9 of 20 in use, by alerts,ledger,qoe; 12 once it ran again  OK
+  scale to zero: the half hour's 269520 edge requests on cdn.edge kept it parked: parked (idle); lag 0 < threshold 100  OK
+  scale to zero: the batch of 8015 woke it 5 s after it was delivered, as job 6, restored from /var/lib/clink/checkpoints/edges/_jobs/5@111  OK
+  scale to zero: and it parked again 66 s after the batch, job 6 at savepoint /var/lib/clink/checkpoints/edges/_jobs/6@143  OK
+  gs://cdn-vendor/pop-minute, minutes 33 to 39 (GCS, exactly once): 42 windows for 42 expected, 42 as the tape says, 0 repeated, 0 unexpected  OK
+  scale to zero: minute 34, open when the job parked, holds requests from both sides of the park: ams 1229+19=1248, fra 1296+20=1316, iad 986+17=1003, lhr 1367+20=1387, nrt 1250+21=1271, sfo 1424+21=1445  OK
+  scale to zero: every one of the bucket's 240 edge-location minutes once  OK
+check: PASS
+```
+
+Step 2 is a fix this scene turned up in clink's operator. It measured a parked
+job's backlog against the group's committed offsets and counted a partition the
+group never committed from its start, and a clink job commits none, so the job
+woke at the first poll for everything it had already read, then went idle and
+parked again, over and over. The operator now records where the topics end
+before it takes the park's savepoint, and counts from there.
+
 ## What it costs
 
 [`tools/footprint.py`](tools/footprint.py) samples every five seconds from the
@@ -173,12 +235,12 @@ spare in the 8 GB suggested above.
 
 | Path | What it is |
 | --- | --- |
-| `pipeline/` | the four jobs |
+| `pipeline/` | the four jobs, and the edges job's scale-to-zero policy |
 | `schemas/` | the playback events' Avro schemas, v1 and v2, and the edge request's Protobuf |
 | `k8s/` | the kind cluster, the `ClinkCluster`, and the chart's values |
 | `cloud/` | the cloud's containers, the collector's pipeline and Prometheus's scrape |
-| `scripts/` | naming the cloud in the cluster, provisioning it, the Secrets, a job's `ClinkJob`, a CLI submission, the leader kill |
-| `tools/` | the tape, the feed, the checks and the footprint |
+| `scripts/` | naming the cloud in the cluster, provisioning it, the Secrets, a job's `ClinkJob`, a CLI submission, the leader kill, the scale-to-zero scene |
+| `tools/` | the tape, the feed, the CDN's later batch, the checks and the footprint |
 
 `data/` (the tape) and `state/` (keys, certificates, logs) are made by a run and
 not tracked.

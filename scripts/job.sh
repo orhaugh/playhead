@@ -11,6 +11,9 @@
 # seconds under the shared checkpoint volume. Applying a changed script is an
 # upgrade: the operator ends the job with a savepoint that cancels it, and
 # submits the new script restored from the savepoint.
+#
+# pipeline/<name>.policy.json, where there is one, joins the ClinkJob's spec:
+# the edges job's says when it parks and what wakes it (PARK=0 leaves it out).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CTX="${KUBE_CONTEXT:-kind-playhead}"
@@ -20,12 +23,17 @@ sql="${ROOT}/pipeline/${name}.sql"
 [ -f "$sql" ] || { echo "job: no ${sql}" >&2; exit 2; }
 script="$(cat "$sql")"
 [ -n "$edit" ] && script="$(sed -e "$edit" <<<"$script")"
+policy="${ROOT}/pipeline/${name}.policy.json"
+if [ "${PARK:-1}" = 0 ] || [ ! -f "$policy" ]; then policy=""; fi
 python3 -I -c '
 import json, sys
-name, script = sys.argv[1], sys.stdin.read()
+name, policy, script = sys.argv[1], sys.argv[2], sys.stdin.read()
+spec = {"clusterName": "clink", "checkpointIntervalMs": 2000, "sql": script}
+if policy:
+    spec.update(json.load(open(policy)))
 print(json.dumps({
     "apiVersion": "clink.dev/v1alpha1",
     "kind": "ClinkJob",
     "metadata": {"name": name, "namespace": "clink"},
-    "spec": {"clusterName": "clink", "checkpointIntervalMs": 2000, "sql": script},
-}))' "$name" <<<"$script" | kubectl --context "$CTX" apply -f - >/dev/null
+    "spec": spec,
+}))' "$name" "$policy" <<<"$script" | kubectl --context "$CTX" apply -f - >/dev/null
