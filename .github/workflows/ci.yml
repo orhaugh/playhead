@@ -66,6 +66,15 @@ jobs:
           kind version
           kubectl version --client
           docker version --format 'docker {{.Server.Version}}'
+
+      # The cloud's images, the kind node's, and clink's image loaded into
+      # the node outgrow the 14 GB a runner starts with free. Its Android,
+      # .NET, Haskell and CodeQL toolchains are not needed here.
+      - name: Room on the runner's disk for the images
+        run: |
+          df -h / | tail -1
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL
           df -h / | tail -1
 
       # No CLEANUP=1: the runner goes away anyway, and a failed run's cluster
