@@ -100,6 +100,12 @@ Every run starts from empty: the cloud is recreated, clink is reinstalled with a
 empty HA directory, and the topics, subjects, buckets and namespace are made again
 ([`scripts/provision.sh`](scripts/provision.sh)).
 
+CI runs the whole of it on every push on a GitHub runner: the operator deployment,
+all three faults and the scale-to-zero scene, on the clink commit `CLINK_PIN` names
+in [`.github/workflows/ci.yml`](.github/workflows/ci.yml), with that commit's
+published runtime image (`ghcr.io/orhaugh/clink-runtime:sha-<first 12 of the commit>`).
+Before a clink release is tagged, clink runs it against the release candidate.
+
 ## What the checks hold it to
 
 [`tools/check.py`](tools/check.py) works out from the tape what every output must

@@ -1,0 +1,89 @@
+# playhead CI: run the showcase end to end the way the README does. A kind
+# cluster runs clink through its operator, the cloud's services run in
+# Docker, the half hour plays at 15x with its three faults (the edges job's
+# upgrade, a Worker kill, a Coordinator failover), then the scale-to-zero
+# scene, and every output is held to the tape.
+#
+# playhead needs clink after v0.15.0, so it runs on a clink commit rather
+# than a release: the runtime image clink's runtime-image workflow published
+# for it (ghcr.io/orhaugh/clink-runtime:sha-<first 12 of the commit>) and the
+# operator, built here from that commit's deploy/ tree. CLINK_PIN below names
+# the commit until a release carries what playhead needs. A dispatch with
+# clink_sdk_run runs on the commit that clink release-binaries dry run built
+# instead; clink's scripts/check-showcases.sh publishes that commit's image
+# before it dispatches.
+
+name: ci
+# A dispatched run names the clink it ran on; push and pull request runs keep
+# their usual name.
+run-name: "${{ github.event_name == 'workflow_dispatch' && format('ci on clink {0}', inputs.clink_sdk_run && format('SDK run {0}', inputs.clink_sdk_run) || 'pin') || '' }}"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      clink_sdk_run:
+        description: A clink release-binaries dry run (its run id) whose commit to run on; that commit's runtime image must be published
+        default: ""
+
+env:
+  # The clink commit playhead runs on: its runtime image and its deploy/ tree.
+  CLINK_PIN: 1a2cfc9cfab816eb77c6096e210a722c9f977d69
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The clink commit to run on
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ inputs.clink_sdk_run }}
+        run: |
+          ref="${CLINK_PIN}"
+          if [[ -n "${RUN}" ]]; then
+            ref="$(gh api "repos/orhaugh/clink/actions/runs/${RUN}" --jq .head_sha)"
+          fi
+          image="ghcr.io/orhaugh/clink-runtime:sha-${ref:0:12}"
+          echo "CLINK_REF=${ref}" >> "${GITHUB_ENV}"
+          echo "CLINK_IMAGE=${image}" >> "${GITHUB_ENV}"
+          echo "clink under test: commit ${ref}, image ${image}" | tee -a "${GITHUB_STEP_SUMMARY}"
+
+      - name: clink's source at that commit, for the operator
+        uses: actions/checkout@v4
+        with:
+          repository: orhaugh/clink
+          ref: ${{ env.CLINK_REF }}
+          path: clink-src
+          fetch-depth: 1
+
+      - name: The tools the run needs
+        run: |
+          kind version
+          kubectl version --client
+          docker version --format 'docker {{.Server.Version}}'
+          df -h / | tail -1
+
+      # No CLEANUP=1: the runner goes away anyway, and a failed run's cluster
+      # is what the next step reads.
+      - name: The run, its faults and the scale-to-zero scene, held to the tape
+        run: CLINK_SRC="${PWD}/clink-src" ./run.sh
+
+      # Logs only: state/ holds the run's generated keys.
+      - name: clink's pods and logs, when the run fails
+        if: failure()
+        run: |
+          k() { kubectl --context kind-playhead "$@"; }
+          k get pods -A -o wide || true
+          for p in $(k -n clink get pods -o name 2>/dev/null); do
+            echo "::group::${p}"
+            k -n clink logs "${p}" --all-containers --tail=300 || true
+            echo "::endgroup::"
+          done
+          echo "::group::operator"
+          k -n clink-operator-system logs deploy/clink-operator-controller --tail=300 || true
+          echo "::endgroup::"
