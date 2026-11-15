@@ -139,6 +139,11 @@ def read_alerts() -> list[dict]:
     return [{k: plain(v) for k, v in json.loads(line).items()} for line in out.splitlines() if line.strip()]
 
 
+# pyarrow reads these small files on one thread. With its CPU thread pool
+# started, a Linux process aborts at exit now and then ("terminate called
+# without an active exception") after every check has passed. In ubuntu:24.04
+# on arm64, with pyarrow 25.0.1, 26.0.0 and 26.0.1, about one exit in twenty
+# aborted, and none in 150 with use_threads=False.
 def read_gcs() -> list[dict]:
     base = "http://127.0.0.1:4443/storage/v1/b/cdn-vendor/o"
     with urllib.request.urlopen(base + "?prefix=" + urllib.parse.quote("pop-minute/"), timeout=10) as r:
@@ -148,7 +153,7 @@ def read_gcs() -> list[dict]:
         if "/committed/" not in name or not name.endswith(".parquet"):
             continue
         with urllib.request.urlopen(f"{base}/{urllib.parse.quote(name, safe='')}?alt=media", timeout=30) as r:
-            rows += pq.read_table(io.BytesIO(r.read())).to_pylist()
+            rows += pq.read_table(io.BytesIO(r.read()), use_threads=False).to_pylist()
     return rows
 
 
@@ -178,7 +183,7 @@ def read_azure() -> list[dict]:
     rows = []
     for info in sorted(found, key=lambda i: i.path):
         if info.type == pafs.FileType.File and info.path.endswith(".parquet"):
-            rows += pq.read_table(info.path, filesystem=azure).to_pylist()
+            rows += pq.read_table(info.path, filesystem=azure, use_threads=False).to_pylist()
     return rows
 
 
