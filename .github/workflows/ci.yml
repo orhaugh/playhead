@@ -4,14 +4,13 @@
 # upgrade, a Worker kill, a Coordinator failover), then the scale-to-zero
 # scene, and every output is held to the tape.
 #
-# playhead needs clink after v0.15.0, so it runs on a clink commit rather
-# than a release: the runtime image clink's runtime-image workflow published
-# for it (ghcr.io/orhaugh/clink-runtime:sha-<first 12 of the commit>) and the
-# operator, built here from that commit's deploy/ tree. CLINK_PIN below names
-# the commit until a release carries what playhead needs. A dispatch with
-# clink_sdk_run runs on the commit that clink release-binaries dry run built
-# instead; clink's scripts/check-showcases.sh publishes that commit's image
-# before it dispatches.
+# playhead runs on the clink release CLINK_VERSION names: its published
+# runtime image (ghcr.io/orhaugh/clink-runtime:<version>) and the operator,
+# built here from that release's deploy/ tree. A dispatch with clink_sdk_run
+# runs on the commit that clink release-binaries dry run built instead, with
+# that commit's runtime image (ghcr.io/orhaugh/clink-runtime:sha-<first 12 of
+# the commit>), which clink's scripts/check-showcases.sh publishes before it
+# dispatches.
 
 name: ci
 # A dispatched run names the clink it ran on; push and pull request runs keep
@@ -29,8 +28,8 @@ on:
         default: ""
 
 env:
-  # The clink commit playhead runs on: its runtime image and its deploy/ tree.
-  CLINK_PIN: 1a2cfc9cfab816eb77c6096e210a722c9f977d69
+  # The clink release playhead runs on: its runtime image and its deploy/ tree.
+  CLINK_VERSION: v0.16.0
 
 jobs:
   run:
@@ -39,21 +38,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: The clink commit to run on
+      - name: The clink to run on
         env:
           GH_TOKEN: ${{ github.token }}
           RUN: ${{ inputs.clink_sdk_run }}
         run: |
-          ref="${CLINK_PIN}"
+          ref="${CLINK_VERSION}"
+          image="ghcr.io/orhaugh/clink-runtime:${CLINK_VERSION#v}"
           if [[ -n "${RUN}" ]]; then
             ref="$(gh api "repos/orhaugh/clink/actions/runs/${RUN}" --jq .head_sha)"
+            image="ghcr.io/orhaugh/clink-runtime:sha-${ref:0:12}"
           fi
-          image="ghcr.io/orhaugh/clink-runtime:sha-${ref:0:12}"
           echo "CLINK_REF=${ref}" >> "${GITHUB_ENV}"
           echo "CLINK_IMAGE=${image}" >> "${GITHUB_ENV}"
-          echo "clink under test: commit ${ref}, image ${image}" | tee -a "${GITHUB_STEP_SUMMARY}"
+          echo "clink under test: ${ref}, image ${image}" | tee -a "${GITHUB_STEP_SUMMARY}"
 
-      - name: clink's source at that commit, for the operator
+      - name: clink's source at that release or commit, for the operator
         uses: actions/checkout@v4
         with:
           repository: orhaugh/clink

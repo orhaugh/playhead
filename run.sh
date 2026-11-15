@@ -34,10 +34,9 @@
 # at; it parks again once the batch is done; and tools/check.py --scale-to-zero
 # holds the scene and the windows on both sides of the park to the tape.
 #
-# The sample needs clink after v0.15.0: typed SQL tables on object-store
-# Parquet, the chart's and the operator's auth, TLS and Secrets, and SQL
-# ClinkJobs. Until the release that carries them, run it against a build of
-# clink and its deploy/ tree at that commit:
+# The sample runs on clink v0.16.0: its published runtime image and its
+# deploy/ tree, read from the clink checkout at that tag. To run it against
+# another build of clink, name the image and the commit of its deploy/ tree:
 #
 #   CLINK_IMAGE=clink-runtime:dev-<sha> CLINK_REF=<sha> ./run.sh
 set -euo pipefail
@@ -51,8 +50,8 @@ FAILOVER="${FAILOVER:-1}"
 UPGRADE="${UPGRADE:-1}"
 PARK="${PARK:-1}"
 export PARK          # scripts/job.sh leaves the edges job's policy out at 0
-IMAGE="${CLINK_IMAGE:?set CLINK_IMAGE and CLINK_REF; see the header}"
-REF="${CLINK_REF:?set CLINK_IMAGE and CLINK_REF; see the header}"
+IMAGE="${CLINK_IMAGE:-ghcr.io/orhaugh/clink-runtime:0.16.0}"
+REF="${CLINK_REF:-v0.16.0}"
 SRC="${CLINK_SRC:-../clink}"
 case "$DEPLOY" in operator | chart) ;; *) echo "run: DEPLOY is operator or chart" >&2; exit 2 ;; esac
 COMPOSE=(docker compose --progress quiet -f cloud/compose.yml --env-file state/cloud.env)
@@ -106,7 +105,7 @@ if [ "$DEPLOY" = operator ]; then
   kubectl --context "$CTX" -n clink-operator-system rollout restart deploy/clink-operator-controller >/dev/null
   kubectl --context "$CTX" -n clink-operator-system rollout status deploy/clink-operator-controller --timeout=120s >/dev/null
   sed -e "s|repository: ghcr.io/orhaugh/clink-runtime|repository: ${IMAGE%:*}|" \
-      -e "s|tag: \"0.15.0\"|tag: \"${IMAGE##*:}\"|" k8s/cluster.yaml | kubectl --context "$CTX" apply -f - >/dev/null
+      -e "s|tag: \"0.16.0\"|tag: \"${IMAGE##*:}\"|" k8s/cluster.yaml | kubectl --context "$CTX" apply -f - >/dev/null
   for _ in $(seq 1 90); do
     [ "$(k get clinkcluster clink -o jsonpath='{.status.phase}' 2>/dev/null)" = Running ] && break
     sleep 2
