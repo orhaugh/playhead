@@ -1,7 +1,7 @@
 # clink on the platform's cluster, from the chart at the pinned release.
 image:
   repository: ghcr.io/orhaugh/clink-runtime
-  tag: "0.16.1"
+  tag: "0.16.2"
   pullPolicy: IfNotPresent
 
 coordinator:

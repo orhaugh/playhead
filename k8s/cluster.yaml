@@ -14,7 +14,7 @@ metadata:
 spec:
   image:
     repository: ghcr.io/orhaugh/clink-runtime
-    tag: "0.16.1"
+    tag: "0.16.2"
   coordinator:
     extraArgs:
       # Lifecycle spans and metrics to the cloud's OpenTelemetry Collector, and

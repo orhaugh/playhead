@@ -34,7 +34,7 @@
 # at; it parks again once the batch is done; and tools/check.py --scale-to-zero
 # holds the scene and the windows on both sides of the park to the tape.
 #
-# The sample runs on clink v0.16.1: its published runtime image and its
+# The sample runs on clink v0.16.2: its published runtime image and its
 # deploy/ tree, read from the clink checkout at that tag. To run it against
 # another build of clink, name the image and the commit of its deploy/ tree:
 #
@@ -50,8 +50,8 @@ FAILOVER="${FAILOVER:-1}"
 UPGRADE="${UPGRADE:-1}"
 PARK="${PARK:-1}"
 export PARK          # scripts/job.sh leaves the edges job's policy out at 0
-IMAGE="${CLINK_IMAGE:-ghcr.io/orhaugh/clink-runtime:0.16.1}"
-REF="${CLINK_REF:-v0.16.1}"
+IMAGE="${CLINK_IMAGE:-ghcr.io/orhaugh/clink-runtime:0.16.2}"
+REF="${CLINK_REF:-v0.16.2}"
 SRC="${CLINK_SRC:-../clink}"
 case "$DEPLOY" in operator | chart) ;; *) echo "run: DEPLOY is operator or chart" >&2; exit 2 ;; esac
 COMPOSE=(docker compose --progress quiet -f cloud/compose.yml --env-file state/cloud.env)
@@ -105,7 +105,7 @@ if [ "$DEPLOY" = operator ]; then
   kubectl --context "$CTX" -n clink-operator-system rollout restart deploy/clink-operator-controller >/dev/null
   kubectl --context "$CTX" -n clink-operator-system rollout status deploy/clink-operator-controller --timeout=120s >/dev/null
   sed -e "s|repository: ghcr.io/orhaugh/clink-runtime|repository: ${IMAGE%:*}|" \
-      -e "s|tag: \"0.16.1\"|tag: \"${IMAGE##*:}\"|" k8s/cluster.yaml | kubectl --context "$CTX" apply -f - >/dev/null
+      -e "s|tag: \"0.16.2\"|tag: \"${IMAGE##*:}\"|" k8s/cluster.yaml | kubectl --context "$CTX" apply -f - >/dev/null
   for _ in $(seq 1 90); do
     [ "$(k get clinkcluster clink -o jsonpath='{.status.phase}' 2>/dev/null)" = Running ] && break
     sleep 2

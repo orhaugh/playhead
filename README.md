@@ -77,7 +77,7 @@ You need Docker with about 8 GB for it, kind, kubectl, Python 3 and OpenSSL, Hel
 for `DEPLOY=chart`, and a clink checkout beside this one (`../clink`, or
 `CLINK_SRC`). The run builds the operator from that checkout, at `CLINK_REF`.
 
-playhead runs on clink v0.16.1. v0.16.1 was the first release with typed SQL
+playhead runs on clink v0.16.2. v0.16.0 was the first release with typed SQL
 tables on object-store Parquet, the chart's and the operator's auth, TLS and
 Secrets, SQL `ClinkJob`s, and the fixes its upgrade, failover and scale to zero
 turned up; v0.16.1 fixes a hang after a Worker kill that its CI found later:
@@ -110,7 +110,7 @@ empty HA directory, and the topics, subjects, buckets and namespace are made aga
 CI runs the whole of it on every push on a GitHub runner: the operator deployment,
 all three faults and the scale-to-zero scene, on the clink release `CLINK_VERSION`
 names in [`.github/workflows/ci.yml`](.github/workflows/ci.yml), with its published
-runtime image (`ghcr.io/orhaugh/clink-runtime:0.16.1`).
+runtime image (`ghcr.io/orhaugh/clink-runtime:0.16.2`).
 Before a clink release is tagged, clink runs it against the release candidate.
 
 ## What the checks hold it to

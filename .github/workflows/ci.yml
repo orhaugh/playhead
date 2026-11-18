@@ -29,7 +29,7 @@ on:
 
 env:
   # The clink release playhead runs on: its runtime image and its deploy/ tree.
-  CLINK_VERSION: v0.16.1
+  CLINK_VERSION: v0.16.2
 
 jobs:
   run:
